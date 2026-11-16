@@ -1,0 +1,41 @@
+name: 24-7 Telegram Auto Clipper
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/30 * * * *'
+
+concurrency:
+  group: telegram-clipper-bot
+  cancel-in-progress: false
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install FFmpeg & Autocrop-vertical
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg libgl1 libglib2.0-0
+          git clone https://github.com/kamilstanuch/Autocrop-vertical.git /tmp/Autocrop
+          pip install -r /tmp/Autocrop/requirements.txt
+          pip install telethon cryptg apscheduler yt-dlp google-genai
+          python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
+
+      - name: Run 24/7 Telegram Bot & Daily Clipper
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          ALLOWED_USERS: ${{ secrets.ALLOWED_USERS }}
+          TRENDING_NICHE: ${{ secrets.TRENDING_NICHE }}
+        run: python3 bot_engine.py
