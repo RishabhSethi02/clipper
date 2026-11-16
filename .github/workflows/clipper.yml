@@ -4,11 +4,18 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '*/30 * * * *'
+  # Committing a change to the bot code restarts the bot automatically.
+  push:
+    branches: [main]
+    paths:
+      - bot_engine.py
+      - requirements.txt
 
-# Only one bot instance at a time; a new run waits for the previous one to finish.
+# Only one bot instance at a time. A code commit (push) replaces the running bot;
+# the 30-minute scheduler never kills a running bot, it just waits its turn.
 concurrency:
   group: telegram-clipper-bot
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 permissions:
   contents: read
