@@ -150,7 +150,11 @@ def _client():
     global _CLIENT
     if _CLIENT is None:
         from google import genai
-        _CLIENT = genai.Client(api_key=GEMINI_API_KEY)
+        from google.genai import types
+        # 4-minute limit per request so a stuck call fails (and the next model is tried)
+        # instead of freezing the whole bot.
+        _CLIENT = genai.Client(api_key=GEMINI_API_KEY,
+                               http_options=types.HttpOptions(timeout=240_000))
     return _CLIENT
 
 
@@ -174,9 +178,7 @@ def list_text_models():
 
 def test_model(name: str) -> str:
     from google.genai import types
-    r = _client().models.generate_content(
-        model=name, contents="Reply with the single word: ok",
-        config=types.GenerateContentConfig(temperature=0))
+    r = _client().models.generate_content(model=name, contents="Reply with the single word: ok")
     return (r.text or "").strip()[:40]
 
 
@@ -225,6 +227,12 @@ def find_moments(video_path: str, n: int):
     """Returns (moments, model_used)."""
     from google.genai import types
     dur = probe_duration(video_path)
+    has_audio = run(["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries",
+                     "stream=codec_type", "-of", "csv=p=0", video_path]).strip()
+    if not has_audio:
+        raise RuntimeError("This video has NO sound (no audio track), so I can't find the best moments from "
+                           "speech. Please send a version that has audio (some YouTube downloaders save "
+                           "video-only files).")
     mp3 = video_path.rsplit(".", 1)[0] + "_audio.mp3"
     run(["ffmpeg", "-y", "-i", video_path, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", mp3])
     client = _client()
@@ -248,18 +256,30 @@ def find_moments(video_path: str, n: int):
             f'"title" (max 80 chars, catchy, ending with #Shorts). Sort by start time.'
         )
         tried, last_err = [], None
+        think_ok = "thinking_level" in getattr(types.ThinkingConfig, "model_fields", {})
         for m in dict.fromkeys([CFG["model"]] + FALLBACK_MODELS):
-            try:
-                resp = client.models.generate_content(
-                    model=m, contents=[up, prompt],
-                    config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.3))
-                moments = parse_moments(resp.text, dur, n, cmin, cmax)
-                if moments:
-                    return moments, m
-                last_err = RuntimeError(f"{m} returned no usable moments")
-            except Exception as e:  # noqa: BLE001
-                last_err = e
-                log.warning("model %s failed: %s", m, str(e)[:200])
+            # first try with low "thinking" (much faster); if the model rejects that, retry without it
+            for low_think in ((True, False) if think_ok else (False,)):
+                try:
+                    kwargs = {"response_mime_type": "application/json"}  # keep Gemini 3's default temperature
+                    if low_think:
+                        kwargs["thinking_config"] = types.ThinkingConfig(thinking_level="low")
+                    t0 = time.time()
+                    log.info("asking %s for %d moments (%.1f min of audio)...", m, n, dur / 60)
+                    resp = client.models.generate_content(
+                        model=m, contents=[up, prompt], config=types.GenerateContentConfig(**kwargs))
+                    log.info("%s answered in %.0fs", m, time.time() - t0)
+                    moments = parse_moments(resp.text, dur, n, cmin, cmax)
+                    if moments:
+                        return moments, m
+                    last_err = RuntimeError(f"{m} returned no usable moments")
+                    break
+                except Exception as e:  # noqa: BLE001
+                    last_err = e
+                    log.warning("model %s failed: %s", m, str(e)[:300])
+                    if low_think and "think" in str(e).lower():
+                        continue  # retry same model without the thinking setting
+                    break
             tried.append(m)
         raise RuntimeError(f"Gemini failed on {', '.join(tried)}. Last error: {str(last_err)[:300]}")
     finally:
