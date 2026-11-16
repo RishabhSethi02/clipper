@@ -141,15 +141,24 @@ def ff_escape(path: str) -> str:
 
 
 # --------------------------------------------------------------------------- Gemini
+_CLIENT = None
+
+
 def _client():
-    from google import genai
-    return genai.Client(api_key=GEMINI_API_KEY)
+    """One shared Gemini client, kept alive for the whole run (a throw-away client gets closed
+    by Python before its results are read, which caused 'client has been closed')."""
+    global _CLIENT
+    if _CLIENT is None:
+        from google import genai
+        _CLIENT = genai.Client(api_key=GEMINI_API_KEY)
+    return _CLIENT
 
 
 def list_text_models():
     """Models from your own API key that can generate text from audio (live list)."""
     out = []
-    for m in _client().models.list():
+    client = _client()
+    for m in client.models.list():
         name = (m.name or "").replace("models/", "")
         actions = getattr(m, "supported_actions", None) or []
         if "generateContent" not in actions:
